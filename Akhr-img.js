@@ -22,14 +22,27 @@ class Measurer {
   }
 }
 
-function loadImage() {
-  return new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => {
-      resolve(img);
-    };
-    img.src = `./ark-img/${Math.floor(Math.random() * 70)}.png`;
-  });
+class Loader {
+  constructor() {
+    this.imageCache = {};
+  }
+
+  async loadImage(src) {
+    if (this.imageCache[src]) {
+      this.imageCache[src];
+    }
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        this.imageCache[src] = img;
+        resolve(img);
+      };
+      img.onerror = e => {
+        reject(e);
+      };
+      img.src = src;
+    });
+  }
 }
 
 const STAFF_LEVEL_BOX_COLOR_MAP = {
@@ -62,20 +75,41 @@ class AkhrDrawer {
    * @param {number} width
    * @param {number} padding
    */
-  constructor(hrList, width, padding) {
+  constructor(hrList, width, padding, withStaffImage) {
     this.hrList = hrList;
     this.width = width;
     this.padding = padding;
     this.height = 0;
     this.paths = [];
+    this.withStaffImage = withStaffImage;
     this.measurer = new Measurer();
+    this.loader = new Loader();
+  }
+
+  async addImagePath(pointer, src, width, height, errorBackGround, borderRadius) {
+    let image = null;
+    try {
+      image = await this.loader.loadImage(src);
+    } catch (e) {
+      console.log('load image error, use default error color ');
+    }
+    this.paths.push({
+      type: 'image',
+      x: pointer.x,
+      y: pointer.y,
+      width,
+      height,
+      image,
+      bgColor: errorBackGround,
+      borderRadius
+    });
   }
 
   addPureBoxPath(pointer, width, height, backgroundColor) {
     this.paths.push({
+      type: 'rect',
       x: pointer.x,
       y: pointer.y,
-      type: 'rect',
       width,
       height,
       color: backgroundColor
@@ -128,6 +162,74 @@ class AkhrDrawer {
     return { boxWidth, resetXY };
   }
 
+  async addImageTextBoxPath(
+    pointer,
+    imageSrc,
+    imageMarginVertical,
+    imageMarginRight,
+    text,
+    fontSize,
+    paddingHorizontal,
+    boxHeight,
+    boxColor,
+    imageErrorColor,
+    color,
+    imageBorderRadius,
+    borderRadius = 0,
+    doNotDraw
+  ) {
+    const { width, height } = this.measurer.text(text, fontSize);
+    let image = null;
+    try {
+      image = await this.loader.loadImage(imageSrc);
+    } catch (e) {
+      console.log(e);
+      console.log('image load error, use default error color');
+    }
+    const imageHeight = boxHeight - imageMarginVertical * 2;
+    const imageWidth = image ? imageHeight * (image.width / image.height) : imageHeight;
+    const boxWidth = imageWidth + imageMarginRight + width + paddingHorizontal * 2;
+    const rectPath = {
+      type: 'rect',
+      x: pointer.x,
+      y: pointer.y,
+      height: boxHeight,
+      width: boxWidth,
+      color: boxColor,
+      borderRadius
+    };
+    const imagePath = {
+      type: 'image',
+      x: pointer.x + paddingHorizontal,
+      y: pointer.y + imageMarginVertical,
+      height: imageHeight,
+      width: imageWidth,
+      bgColor: imageErrorColor,
+      image,
+      borderRadius: imageBorderRadius
+    };
+    const textPath = {
+      type: 'text',
+      x: pointer.x + paddingHorizontal + imageWidth + imageMarginRight,
+      y: pointer.y + (boxHeight - height) / 2,
+      fontSize,
+      color,
+      content: text
+    };
+    const resetXY = p => {
+      rectPath.x = p.x;
+      rectPath.y = p.y;
+      imagePath.x = p.x + paddingHorizontal;
+      imagePath.y = p.y + imageMarginVertical;
+      textPath.x = p.x + paddingHorizontal + imageWidth + imageMarginRight;
+      textPath.y = p.y + (boxHeight - height) / 2;
+    };
+    if (doNotDraw) {
+      return { boxWidth, resetXY, rectPath, imagePath, textPath };
+    }
+    return { boxWidth, resetXY };
+  }
+
   addTagTextBox(pointer, tag, boxHeight) {
     return this.addPureTextBoxPath(pointer, tag, 14, 10, boxHeight, '#6c757d', TEXT_COLOR.WHITE, 3);
   }
@@ -136,15 +238,34 @@ class AkhrDrawer {
     return this.addPureTextBoxPath(pointer, tag, 14, 10, boxHeight, '#6c757d', TEXT_COLOR.WHITE, 3, true);
   }
 
-  getStaffTextBox(pointer, name, boxHeight, level) {
+  getStaffTextBox(pointer, staff, boxHeight, level) {
     return this.addPureTextBoxPath(
       pointer,
-      name,
+      staff.name,
       14,
       10,
       boxHeight,
-      STAFF_LEVEL_BOX_COLOR_MAP[level],
-      STAFF_LEVEL_FONT_COLOR_MAP[level],
+      STAFF_LEVEL_BOX_COLOR_MAP[staff.level],
+      STAFF_LEVEL_FONT_COLOR_MAP[staff.level],
+      3,
+      true
+    );
+  }
+
+  getStaffImageTextBox(pointer, staff, boxHeight) {
+    return this.addImageTextBoxPath(
+      pointer,
+      `./res/akhr-chara/${staff.enName}.png`,
+      3,
+      5,
+      staff.name,
+      14,
+      10,
+      boxHeight,
+      STAFF_LEVEL_BOX_COLOR_MAP[staff.level],
+      'white',
+      STAFF_LEVEL_FONT_COLOR_MAP[staff.level],
+      3,
       3,
       true
     );
@@ -195,19 +316,20 @@ class AkhrDrawer {
     );
   }
 
-  getStaffsPath(startPointer, maxWidth, staffs) {
-    const boxHeight = 35;
+  async getStaffsPath(startPointer, maxWidth, staffs) {
+    const boxHeight = this.withStaffImage ? 40 : 35;
     const paddingBottom = 10;
     let lineCount = 1;
     let width = 0;
     const startX = startPointer.x;
-    const paths = staffs.reduce((result, staff) => {
-      const { name, level } = staff;
-      const { boxWidth, resetXY, rectPath, textPath } = this.getStaffTextBox(
+    const paths = await staffs.reduce(async (result, staff) => {
+      result = await result;
+      const getPathFunc = this[this.withStaffImage ? 'getStaffImageTextBox' : 'getStaffTextBox'];
+      const { boxWidth, resetXY, rectPath, textPath, imagePath } = await getPathFunc.call(
+        this,
         startPointer,
-        name,
-        boxHeight,
-        level
+        staff,
+        boxHeight
       );
       if (width + boxWidth > maxWidth) {
         // 一行放不下, 自动换行
@@ -223,26 +345,30 @@ class AkhrDrawer {
       width += boxWidth;
       width += 10;
       result.push(rectPath);
+      if (this.withStaffImage) {
+        result.push(imagePath);
+      }
       result.push(textPath);
       return result;
-    }, []);
+    }, Promise.resolve([]));
     return {
       height: boxHeight * lineCount + paddingBottom * (lineCount - 1),
       paths
     };
   }
 
-  addRowPath({ tags, staffs }, index) {
+  async addRowPath({ tags, staffs }, index) {
     const rowPadding = 8;
     const tagsContainerMaxWidth = 120;
     const staffsMaxWidth = this.width - tagsContainerMaxWidth;
     const tagsStartPointer = { x: rowPadding, y: this.height + rowPadding };
     const staffsStartPointer = { x: tagsContainerMaxWidth, y: this.height + rowPadding };
     const { height: tagsHeight, paths: tagPaths } = this.getCombineTagsPath(tagsStartPointer, tags);
-    const { height: staffsHeight, paths: staffPaths } = this.getStaffsPath(
+    const { height: staffsHeight, paths: staffPaths } = await this.getStaffsPath(
       staffsStartPointer,
       staffsMaxWidth,
-      staffs
+      staffs,
+      true
     );
     const maxHeight = Math.max(tagsHeight, staffsHeight) + rowPadding * 2;
     this.addPureBoxPath(
@@ -255,23 +381,21 @@ class AkhrDrawer {
     this.height += maxHeight;
   }
 
-  addContentPath() {
+  async addContentPath() {
     this.height += 10; // marginTop
-    this.hrList.combined.forEach(this.addRowPath.bind(this));
-  }
-
-  getPath() {
-    this.addTitlePath();
-    this.addContentPath();
-  }
-
-  drawRect({ color, x, y, width, height, borderRadius: r }) {
-    this.ctx.fillStyle = color;
-    if (!r) {
-      this.ctx.fillRect(x, y, width, height);
-      return;
+    const { combined } = this.hrList;
+    for (let index in combined) {
+      await this.addRowPath(combined[index], index);
     }
-    this.ctx.beginPath();
+  }
+
+  async getPath() {
+    this.addTitlePath();
+    await this.addContentPath();
+  }
+
+  drawRadiusRect(x, y, width, height, borderRadius) {
+    const r = borderRadius;
     this.ctx.beginPath();
     this.ctx.moveTo(x + r, y);
     this.ctx.lineTo(x + width - r, y);
@@ -283,7 +407,32 @@ class AkhrDrawer {
     this.ctx.lineTo(x, y + r);
     this.ctx.quadraticCurveTo(x, y, x + r, y);
     this.ctx.closePath();
+  }
+
+  drawRect({ color, x, y, width, height, borderRadius }) {
+    this.ctx.fillStyle = color;
+    if (!borderRadius) {
+      this.ctx.fillRect(x, y, width, height);
+      return;
+    }
+    this.drawRadiusRect(x, y, width, height, borderRadius);
     this.ctx.fill();
+  }
+
+  drawImage({ x, y, width, height, image, bgColor = 'white', borderRadius }) {
+    if (!image && bgColor) {
+      this.drawRect({ color: bgColor, x, y, width, height, borderRadius });
+      return;
+    }
+    if (borderRadius) {
+      this.ctx.save();
+      this.drawRadiusRect(x, y, width, height, borderRadius);
+      this.ctx.clip();
+      this.ctx.drawImage(image, x, y, width, height);
+      this.ctx.restore();
+    } else {
+      this.ctx.drawImage(image, x, y, width, height);
+    }
   }
 
   drawText(path) {
@@ -294,7 +443,7 @@ class AkhrDrawer {
   }
 
   async draw() {
-    this.getPath();
+    await this.getPath();
     const dom = document.createElement('canvas');
     this.ctx = dom.getContext('2d');
     const domWidth = this.width + this.padding * 2;
@@ -308,12 +457,19 @@ class AkhrDrawer {
     this.ctx.fillStyle = '#ECEFF1';
     this.ctx.fillRect(0, 0, domWidth, domHeight);
     this.ctx.fill();
-    
-    const img = await loadImage();
-    const imgWidth = 300;
-    const imgHeigh = 300 * (img.height / img.width);
-    this.ctx.drawImage(img, domWidth - imgWidth, domHeight - imgHeigh, imgWidth, imgHeigh);
 
+    const bgImage = await this.loader.loadImage(`./res/akhr-bg/${Math.floor(Math.random() * 70)}.png`);
+
+    const imgWidth = Math.min(this.width, this.height) * 0.7;
+    const imgHeigh = imgWidth * (bgImage.height / bgImage.width);
+    this.drawImage({
+      x: domWidth - imgWidth,
+      y: domHeight - imgHeigh,
+      width: imgWidth,
+      height: imgHeigh,
+      image: bgImage,
+      bgColor: '#ECEFF1'
+    });
     this.ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
     this.ctx.fillRect(0, 0, domWidth, domHeight);
     this.ctx.fill();
@@ -327,11 +483,14 @@ class AkhrDrawer {
         case 'rect':
           this.drawRect(p);
           break;
+        case 'image':
+          this.drawImage(p);
+          break;
         default:
       }
     });
   }
 }
 
-const drawer = new AkhrDrawer(window.HR_RESULT, 500, 10);
+const drawer = new AkhrDrawer(window.HR_RESULT, 1000, 10, true);
 drawer.draw();
