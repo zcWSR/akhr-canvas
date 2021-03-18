@@ -2,8 +2,6 @@
 
 web端试水, 最终会搬到后端用 node-canvas 库绘制
 
-## 运行
+## 效果
 
-```
-simple-server ./
-```
+![akhr](./demo.png)
